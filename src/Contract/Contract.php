@@ -22,7 +22,7 @@ use Web3php\Web3;
  * $erc20 = $web3->contract($abiJson)->at('0x...');
  * $erc20->call('name');                     // "Token"（单输出直接是标量）
  * $erc20->call('balanceOf', $user);         // "1234500000000000000"（十进制字符串）
- * $erc20->call('getReserves');              // 多输出 → [0 => …, 1 => …, 'reserve0' => …, …]
+ * $erc20->call('getReserves');              // 多输出全命名 → ['reserve0' => …, 'reserve1' => …]
  * $erc20->send('transfer', [$to, '1000000'], $wallet);
  */
 final class Contract
@@ -60,7 +60,7 @@ final class Contract
 
     /**
      * 只读调用（eth_call）。参数直接展开传，按 ABI 输出自动解码：
-     * 单输出返回标量，多输出返回"数字键 + 字段名键"的数组。
+     * 单输出返回标量；多输出在全命名时只返回字段名键（有未命名输出则保留数字键兜底）。
      */
     public function call(string $method, mixed ...$args): mixed
     {

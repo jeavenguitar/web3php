@@ -99,13 +99,13 @@ final class AbiCodecTest extends TestCase
         $this->assertSame(['1', '2', '3'], $decoded[8]);
         $this->assertSame(['a', 'bb', ''], $decoded[9]);
 
-        // 嵌套 tuple：位置键 + 解码出的结构逐项对上
-        $this->assertSame('1', $decoded[10][0][0]);
-        $this->assertTrue($decoded[10][0][1][0]);
-        $this->assertSame(strtolower($addr1), strtolower($decoded[10][0][1][1]));
-        $this->assertSame('255', $decoded[10][1][0]);
-        $this->assertFalse($decoded[10][1][1][0]);
-        $this->assertSame(strtolower($addr2), strtolower($decoded[10][1][1][1]));
+        // 嵌套 tuple：外层成员全部有名字 → 只返回字段名键；pair 的成员未命名 → 保留数字键
+        $this->assertSame('1', $decoded[10][0]['id']);
+        $this->assertTrue($decoded[10][0]['pair'][0]);
+        $this->assertSame(strtolower($addr1), strtolower($decoded[10][0]['pair'][1]));
+        $this->assertSame('255', $decoded[10][1]['id']);
+        $this->assertFalse($decoded[10][1]['pair'][0]);
+        $this->assertSame(strtolower($addr2), strtolower($decoded[10][1]['pair'][1]));
     }
 
     /**
@@ -140,7 +140,8 @@ final class AbiCodecTest extends TestCase
     }
 
     /**
-     * 输出命名：多值返回要带字段名键（数字键与名字键并存）。
+     * 输出命名：全部输出有唯一名字时只返回字段名键（与链上结构一致），
+     * 不再混入 0/1/2 数字键。
      */
     public function testNamedOutputs(): void
     {
@@ -155,8 +156,42 @@ final class AbiCodecTest extends TestCase
         $this->assertSame('1000', $decoded['reserve0']);
         $this->assertSame('2000', $decoded['reserve1']);
         $this->assertSame('123456', $decoded['blockTimestampLast']);
-        $this->assertSame('1000', $decoded[0]);
-        $this->assertSame('123456', $decoded[2]);
+        $this->assertArrayNotHasKey(0, $decoded);
+        $this->assertArrayNotHasKey(2, $decoded);
+    }
+
+    /**
+     * 有未命名输出时保留数字键兜底（命名的照样给名字键）。
+     */
+    public function testMixedNamedAndUnnamedKeepsNumericKeys(): void
+    {
+        $types = [
+            ParamType::fromAbiItem(['type' => 'uint256', 'name' => 'total']),
+            ParamType::fromAbiItem(['type' => 'uint256', 'name' => '']),
+        ];
+        $encoded = Encoder::encode($types, ['7', '8']);
+        $decoded = Decoder::decode($types, '0x' . $encoded);
+
+        $this->assertSame('7', $decoded[0]);
+        $this->assertSame('7', $decoded['total']);
+        $this->assertSame('8', $decoded[1]);
+    }
+
+    /**
+     * 重名输出会造成键覆盖，此时保留数字键。
+     */
+    public function testDuplicateNamesKeepNumericKeys(): void
+    {
+        $types = [
+            ParamType::fromAbiItem(['type' => 'uint256', 'name' => 'amount']),
+            ParamType::fromAbiItem(['type' => 'uint256', 'name' => 'amount']),
+        ];
+        $encoded = Encoder::encode($types, ['1', '2']);
+        $decoded = Decoder::decode($types, '0x' . $encoded);
+
+        $this->assertSame('1', $decoded[0]);
+        $this->assertSame('2', $decoded[1]);
+        $this->assertSame('2', $decoded['amount']); // 后写的覆盖前者，数字键兜底可取回
     }
 
     /**

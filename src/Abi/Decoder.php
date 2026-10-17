@@ -51,7 +51,7 @@ final class Decoder
             }
         }
 
-        return $out;
+        return self::preferNamedKeys($out, $types);
     }
 
     /**
@@ -157,7 +157,7 @@ final class Decoder
                     $pos = $p;
                 }
 
-                return $out;
+                return self::preferNamedKeys($out, $type->components);
         }
 
         throw new AbiException('无法解码的类型基类：' . $type->base);
@@ -185,6 +185,34 @@ final class Decoder
         }
 
         return $absolute;
+    }
+
+    /**
+     * 输出（或 tuple 成员）全都有唯一名字时去掉数字键，返回结构与链上/文档一致：
+     * ['invitors' => …, 'teamAmounts' => …]；有未命名、重名或纯数字名时保留数字键兜底。
+     *
+     * @param array<int|string,mixed> $out
+     * @param ParamType[] $types
+     * @return array<int|string,mixed>
+     */
+    private static function preferNamedKeys(array $out, array $types): array
+    {
+        $names = [];
+        foreach ($types as $type) {
+            $name = $type->name;
+            if ($name === null || $name === '' || ctype_digit($name) || isset($names[$name])) {
+                return $out;
+            }
+            $names[$name] = true;
+        }
+
+        foreach (array_keys($out) as $key) {
+            if (is_int($key)) {
+                unset($out[$key]);
+            }
+        }
+
+        return $out;
     }
 
     private static function need(string $bin, int $pos, int $length, ParamType $type): string

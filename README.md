@@ -26,7 +26,7 @@ $txHash = $usdt->send('transfer', [$to, '1000000'], $wallet);  // 本地签名 +
 | 节点偶发断连直接炸业务 | 陈旧长连接自动换句柄重试；失败按线性退避重试 |
 | 单节点，挂了就全挂 | 多端点列表 + 自动故障转移，成功后粘住命中节点复用连接 |
 | 空响应 / 网关 502 HTML 页静默失败 | 既无 result 也无 error、HTTP 非 200、非 JSON 一律按传输失败重试 |
-| `tuple[]` 解码崩溃、多值返回键名漂移 | 完整 ABI v2 编解码（嵌套 tuple / 定长与动态数组 / 任意组合），多值返回数字键 + 字段名键并存 |
+| `tuple[]` 解码崩溃、多值返回键名漂移 | 完整 ABI v2 编解码（嵌套 tuple / 定长与动态数组 / 任意组合），多值输出全命名时只返回字段名键，与链上结构一致 |
 | 返回数据被截断时静默给出错值 | 解码前逐字节校验长度，截断即抛明确异常 |
 | revert 只抛一个 "execution reverted" | 自动解出 `Error(string)` / `Panic(uint256)` 的人类可读原因 |
 | 数值精度丢失（float/int 硬转） | 全链路 GMP：uint256 一律十进制字符串；编码侧拒绝浮点入参 |
@@ -98,9 +98,10 @@ $token->call('name');                             // string
 $token->call('balanceOf', $user);                 // uint256 → 十进制字符串
 $token->call('decimals');                         // uint8 → "18"
 
-// 多输出 → 数字键 + 字段名键并存（键名来自 ABI，不会漂移）
+// 多输出 → 全部有名字时只返回字段名键（与链上一致，没有 0/1/2 混在里面）
 $r = $pair->call('getReserves');
-$r[0]; $r['reserve0'];                            // 同一个值两种取法
+$r['reserve0'];                                  // 直接按字段名取
+// 有未命名输出时回退数字键，命名的照样给名字键
 
 // struct / tuple 数组：每个元素是「字段名 => 值」数组，长度 = 元素个数
 $infos = $nft->call('getGlobalNFTs', 0, 50);      // 50 个元素的数组，不会按 word 数误截
