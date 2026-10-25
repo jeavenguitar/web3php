@@ -121,6 +121,9 @@ final class Contract
 
     /**
      * 估算某方法调用的 gas（wei，十进制字符串）。
+     *
+     * 模拟执行被 revert 时不抛异常，直接返回链上报错文本
+     * （如 "Error(string): transfer amount exceeds balance"），用 ctype_digit() 区分估值与报错。
      */
     public function estimateGas(string $method, array $args = [], ?string $from = null, array $options = []): string
     {

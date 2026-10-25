@@ -11,6 +11,7 @@ use Web3php\Exception\RpcException;
 use Web3php\Exception\TxException;
 use Web3php\Rpc\RpcClient;
 use Web3php\Tx\Transaction;
+use Web3php\Utils\Hex;
 
 /**
  * 门面入口（web3.js 风格）：
@@ -121,17 +122,12 @@ class Web3
             if (!empty($tx['data'])) {
                 $estimate['data'] = $tx['data'];
             }
-            try {
-                $tx['gas'] = $this->eth()->estimateGas($estimate);
-            } catch (RpcException $e) {
-                $reason = Decoder::decodeKnownError($e->rpcData);
-                throw new TxException(
-                    'estimateGas 失败，交易大概率会 revert：' . $e->getMessage()
-                    . ($reason !== null ? '（原因：' . $reason . '）' : ''),
-                    0,
-                    $e,
-                );
+            $estimated = $this->eth()->estimateGas($estimate);
+            if (!ctype_digit($estimated)) {
+                // estimateGas 被 revert 时返回的是人类可读报错文本，不是数字
+                throw new TxException('estimateGas 失败，交易大概率会 revert：' . $estimated);
             }
+            $tx['gas'] = $estimated;
         }
 
         $raw = Transaction::sign($wallet, $tx);

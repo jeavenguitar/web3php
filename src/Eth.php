@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Web3php;
 
+use Web3php\Abi\Decoder;
 use Web3php\Exception\RpcException;
 use Web3php\Rpc\RpcClient;
 use Web3php\Utils\Hex;
@@ -148,11 +149,24 @@ final class Eth
     /**
      * 估算 gas（wei，十进制字符串）。
      *
+     * 与其他方法不同：模拟执行被 revert（余额不足、授权不够等业务错误）
+     * 不抛异常，而是直接返回链上报错文本（如 "Error(string): ERC20: transfer
+     * amount exceeds balance"），用 ctype_digit() 区分估值与报错；
+     * 只有节点完全不可达（传输层失败）才抛 RpcException。
+     *
      * @param array{from?:string,to?:string,data?:string,value?:string} $call
      */
     public function estimateGas(array $call, string|int $block = 'latest'): string
     {
-        return self::quantityToString($this->rpc->request('eth_estimateGas', [$call, self::blockParam($block)]));
+        try {
+            return self::quantityToString($this->rpc->request('eth_estimateGas', [$call, self::blockParam($block)]));
+        } catch (RpcException $e) {
+            if ($e->rpcCode === 0) {
+                throw $e;
+            }
+
+            return Decoder::decodeKnownError($e->rpcData) ?? $e->getMessage();
+        }
     }
 
     /**

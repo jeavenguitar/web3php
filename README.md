@@ -168,7 +168,18 @@ $gas = $eth->estimateGas([
 ]);
 ```
 
-返回值是 gas 数量（十进制字符串），乘上 gas 单价才是手续费：
+模拟执行被 revert 时**不抛异常，直接返回链上报错文本**（`Error(string)` / `Panic(uint256)` 自动解码），用 `ctype_digit()` 区分估值与报错：
+
+```php
+$gas = $token->estimateGas('transfer', [$to, '1000000'], $from);
+// from 余额不足时 $gas = "Error(string): ERC20: transfer amount exceeds balance"
+
+if (!ctype_digit($gas)) {
+    exit("预估失败，链上报错：{$gas}\n");   // 原样展示给用户即可，不用 try/catch
+}
+```
+
+正常时返回值是 gas 数量（十进制字符串），乘上 gas 单价才是手续费：
 
 ```php
 $fees   = $eth->suggestFees();                        // ['legacy' => …, 'maxFeePerGas' => …, …]
@@ -179,8 +190,8 @@ printf("本笔手续费约 %s BNB\n", bcdiv($feeWei, bcpow('10', '18'), 6));
 
 注意：
 
-- **from 一定要传**：节点按 from 的当前状态模拟执行——主币余额不够、代币没授权，预估都会直接 revert。
-- 预估被 revert 时抛 `RpcException`，用 `Decoder::decodeKnownError($e->rpcData)` 可解出 `Error(string)` 的人类可读原因。
+- **from 一定要传**：节点按 from 的当前状态模拟执行——主币余额不够、代币没授权，预估都会 revert（此时返回报错文本）。
+- **只有节点完全不可达才抛 `RpcException`**（重试与故障转移已耗尽）；链上业务报错一律走返回值，不抛异常。
 - gas 是基于当前状态的估值，内存池拥堵、合约状态变化后实际用量会浮动，展示给用户时建议加 10%~20% 余量。
 
 ### 批量查询
@@ -197,6 +208,7 @@ $results = $web3->rpc()->batch([
 
 - 传输层问题（连接失败 / 超时 / HTTP 非 200 / 非 JSON / 空响应）**不直接抛**：先在当前节点退避重试，耗尽后切换下一个节点，全部失败才抛 `RpcException`（message 汇总每个节点的失败原因）。
 - RPC 业务错误（`execution reverted`、参数错误等）**不盲目重试**（重试也必然失败），立即抛 `RpcException`，带 `rpcCode` / `rpcData`。
+- `estimateGas` 是特例：模拟执行被 revert 属于「业务答案」而非故障——不抛异常，直接返回已解码的链上报错文本（`ctype_digit()` 区分估值与报错），只有节点不可达才抛 `RpcException`。
 - `eth_getTransactionReceipt` 未上链返回 `null` —— pending 不是错误。
 - `failover_error_codes`：个别公共节点对特定查询返回错误而别的节点查得到（例如部分节点查久远回执返回 `-32602`），把这类错误码配进来会自动换节点再查。
 
