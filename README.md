@@ -141,6 +141,48 @@ $receipt = $web3->eth()->waitForReceipt($hash);
 `sendTransaction` 缺省行为：nonce 取 `pending`、gasPrice 取 `eth_gasPrice`、gas 走 `eth_estimateGas`；
 estimateGas 被 revert 时会抛出带人类可读原因的异常（`Error(string)` / `Panic(uint256)` 自动解码）。
 
+### 预估手续费（eth_estimateGas）
+
+```php
+$eth = $web3->eth();
+
+// 1) 主币转账预估（BNB / ETH 等；value 传 0x hex）
+$gas = $eth->estimateGas([
+    'from'  => $wallet->address(),               // 余额检查会用到 from
+    'to'    => $payee,
+    'value' => '0x2386f26fc10000',               // 0.01 BNB = Hex::decToHex('10000000000000000')
+]);
+// "21000" —— 普通主币转账固定 21000，不查也行
+
+// 2) ERC20 合约转账预估（calldata 按 ABI 自动编码）
+$gas = $token->estimateGas('transfer', [$to, '1000000'], $wallet->address());
+
+// 3) 其他合约方法预估（approve / swap 等，参数照 send() 传）
+$gas = $token->estimateGas('approve', [$spender, bcpow('10', '18')], $wallet->address());
+
+// 4) 自己组 calldata 时用底层接口
+$gas = $eth->estimateGas([
+    'from' => $wallet->address(),
+    'to'   => $token->address(),
+    'data' => $token->encode('transfer', [$to, '1000000']),
+]);
+```
+
+返回值是 gas 数量（十进制字符串），乘上 gas 单价才是手续费：
+
+```php
+$fees   = $eth->suggestFees();                        // ['legacy' => …, 'maxFeePerGas' => …, …]
+$feeWei = bcmul($gas, $fees['legacy']);               // Legacy：gas × gasPrice
+$maxWei = bcmul($gas, $fees['maxFeePerGas']);         // EIP-1559 上限，实际通常更低
+printf("本笔手续费约 %s BNB\n", bcdiv($feeWei, bcpow('10', '18'), 6));
+```
+
+注意：
+
+- **from 一定要传**：节点按 from 的当前状态模拟执行——主币余额不够、代币没授权，预估都会直接 revert。
+- 预估被 revert 时抛 `RpcException`，用 `Decoder::decodeKnownError($e->rpcData)` 可解出 `Error(string)` 的人类可读原因。
+- gas 是基于当前状态的估值，内存池拥堵、合约状态变化后实际用量会浮动，展示给用户时建议加 10%~20% 余量。
+
 ### 批量查询
 
 ```php
