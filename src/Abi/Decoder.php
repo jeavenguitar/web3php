@@ -215,6 +215,88 @@ final class Decoder
         return $out;
     }
 
+    /**
+     * 解码事件日志：indexed 参数依次取自 topics[1..]（anonymous 事件从 topics[0] 起），
+     * 非 indexed 参数整体 ABI 编码在 data 里。返回值命名规则与 decode() 一致。
+     *
+     * 动态类型（string / bytes / 数组 / 含动态成员的 tuple）做 indexed 时，
+     * 链上只存内容的 keccak-256 哈希——此时解出的就是该哈希，无法还原原文。
+     *
+     * @param string[] $topics
+     * @return array<int|string,mixed>
+     */
+    public static function decodeEvent(Event $event, array $topics, string $dataHex): array
+    {
+        $firstParam = $event->anonymous ? 0 : 1;
+
+        if (!$event->anonymous) {
+            $signature = Hex::ensurePrefix((string) ($topics[0] ?? ''));
+            if (Hex::stripPrefix($signature) !== Hex::stripPrefix($event->topic0)) {
+                throw new AbiException('topic0 与事件签名不匹配：期望 ' . $event->topic0 . '，实际 ' . ($signature ?: '(空)'));
+            }
+        }
+
+        $indexedTypes = array_values(array_filter(
+            $event->inputs,
+            fn (int $i) => $event->indexed[$i],
+            ARRAY_FILTER_USE_KEY,
+        ));
+        $dataTypes = array_values(array_filter(
+            $event->inputs,
+            fn (int $i) => !$event->indexed[$i],
+            ARRAY_FILTER_USE_KEY,
+        ));
+
+        if (count($topics) - $firstParam !== count($indexedTypes)) {
+            throw new AbiException(sprintf(
+                '事件 %s 的 topics 数量不匹配：期望 %d 个 indexed 参数 topic，实际 %d 个',
+                $event->name,
+                count($indexedTypes),
+                max(0, count($topics) - $firstParam),
+            ));
+        }
+        if ($dataTypes !== [] && Hex::stripPrefix($dataHex) === '') {
+            throw new AbiException("事件 {$event->name} 的 data 为空，但 ABI 声明了非 indexed 参数");
+        }
+
+        $out = [];
+        $topicIndex = $firstParam;
+        foreach ($event->inputs as $i => $type) {
+            if ($event->indexed[$i]) {
+                $out[$i] = $type->isDynamic()
+                    ? Hex::ensurePrefix((string) $topics[$topicIndex])
+                    : self::decode([self::unnamed($type)], Hex::ensurePrefix((string) $topics[$topicIndex]))[0];
+                $topicIndex++;
+            }
+        }
+
+        // 非 indexed 参数整体编码在 data 里；按位置回填，命名键最后统一补
+        $dataValues = self::decode(array_map(self::unnamed(...), $dataTypes), $dataHex);
+        $dataIndex = 0;
+        foreach ($event->inputs as $i => $type) {
+            if (!$event->indexed[$i]) {
+                $out[$i] = $dataValues[$dataIndex++];
+            }
+            if ($type->name !== null && $type->name !== '') {
+                $out[$type->name] = $out[$i];
+            }
+        }
+
+        return self::preferNamedKeys($out, $event->inputs);
+    }
+
+    /**
+     * 去掉参数名的副本：decode() 对全命名类型会剥掉数字键，
+     * 事件按位置取值时必须保证数字键存在。
+     */
+    private static function unnamed(ParamType $type): ParamType
+    {
+        $copy = clone $type;
+        $copy->name = null;
+
+        return $copy;
+    }
+
     private static function need(string $bin, int $pos, int $length, ParamType $type): string
     {
         if ($pos < 0 || $length < 0 || $pos + $length > strlen($bin)) {

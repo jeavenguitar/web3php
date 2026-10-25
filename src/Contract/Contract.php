@@ -24,6 +24,8 @@ use Web3php\Web3;
  * $erc20->call('balanceOf', $user);         // "1234500000000000000"（十进制字符串）
  * $erc20->call('getReserves');              // 多输出全命名 → ['reserve0' => …, 'reserve1' => …]
  * $erc20->send('transfer', [$to, '1000000'], $wallet);
+ * $erc20->decodeInput($tx->input);          // 解析交易 calldata
+ * $erc20->decodeLogs($receipt->logs);       // 解析事件日志
  */
 final class Contract
 {
@@ -117,6 +119,62 @@ final class Contract
     public function decode(string $method, string $dataHex): array
     {
         return Decoder::decode($this->abi->method($method)->outputs, $dataHex);
+    }
+
+    /**
+     * 解析交易的 input data（calldata）：按前 4 字节选择子反查 ABI 方法并解码参数。
+     * input 为 '0x'（纯主币转账）时返回 method=null，不报错。
+     *
+     * @return array{method:?string, signature:?string, selector:?string, args:array<int|string,mixed>}
+     */
+    public function decodeInput(string $input): array
+    {
+        $hex = Hex::stripPrefix($input);
+        if ($hex === '') {
+            return ['method' => null, 'signature' => null, 'selector' => null, 'args' => []];
+        }
+        if (strlen($hex) < 8 || !ctype_xdigit($hex)) {
+            throw new AbiException('非法的 calldata（hex，选择子 + 参数）：' . substr($input, 0, 74));
+        }
+
+        $selector = substr($hex, 0, 8);
+        $method = $this->abi->bySelector($selector)
+            ?? throw new AbiException('选择子 0x' . strtolower($selector) . ' 不在 ABI 中，无法精确解析；无 ABI 时可用 RawDecoder 尽力识别');
+
+        return [
+            'method' => $method->name,
+            'signature' => $method->signature,
+            'selector' => '0x' . strtolower($selector),
+            'args' => Decoder::decode($method->inputs, '0x' . substr($hex, 8)),
+        ];
+    }
+
+    /**
+     * 解析回执（或 getLogs）的日志数组：按 topic0 反查 ABI 事件并解码参数。
+     * 不在 ABI 中的日志不报错，event=null 并把原始日志放在 log 键下。
+     *
+     * @param array<int,object|array> $logs
+     * @return array<int,array{event:?string, address:?string, args:array<int|string,mixed>, log:object}>
+     */
+    public function decodeLogs(array $logs): array
+    {
+        $out = [];
+        foreach ($logs as $log) {
+            $log = (object) $log;
+            $topics = array_map(strval(...), (array) ($log->topics ?? []));
+
+            $event = isset($topics[0]) ? $this->abi->byTopic0($topics[0]) : null;
+            $out[] = [
+                'event' => $event?->name,
+                'address' => isset($log->address) ? (string) $log->address : null,
+                'args' => $event !== null
+                    ? Decoder::decodeEvent($event, $topics, (string) ($log->data ?? '0x'))
+                    : [],
+                'log' => $log,
+            ];
+        }
+
+        return $out;
     }
 
     /**

@@ -18,6 +18,12 @@ final class Abi
     /** @var array<string, Method> 选择子（8 hex，无 0x）→ Method */
     private array $bySelector = [];
 
+    /** @var array<string, Event> topic0（64 hex，无 0x）→ Event */
+    private array $eventsByTopic0 = [];
+
+    /** @var list<Event> */
+    private array $eventList = [];
+
     /** @var array<int, array<string,mixed>> 原始 ABI 条目（含 event 等，供扩展用） */
     private array $items = [];
 
@@ -37,12 +43,17 @@ final class Abi
         foreach ($abi as $item) {
             $item = (array) $item;
             $this->items[] = $item;
+            $type = $item['type'] ?? 'function';
 
             // 老版本 solc 导出的 ABI 可能没有 type 字段，缺省视为 function
-            if (($item['type'] ?? 'function') === 'function' && ($item['name'] ?? '') !== '') {
+            if ($type === 'function' && ($item['name'] ?? '') !== '') {
                 $method = Method::fromAbiItem($item);
                 $this->byName[$method->name][] = $method;
                 $this->bySelector[Hex::stripPrefix($method->selector)] = $method;
+            } elseif ($type === 'event' && ($item['name'] ?? '') !== '') {
+                $event = Event::fromAbiItem($item);
+                $this->eventList[] = $event;
+                $this->eventsByTopic0[Hex::stripPrefix($event->topic0)] = $event;
             }
         }
     }
@@ -81,6 +92,22 @@ final class Abi
     public function bySelector(string $selector): ?Method
     {
         return $this->bySelector[Hex::stripPrefix($selector)] ?? null;
+    }
+
+    /**
+     * 按 topic0（事件签名哈希）反查事件定义。
+     */
+    public function byTopic0(string $topic0): ?Event
+    {
+        return $this->eventsByTopic0[Hex::stripPrefix($topic0)] ?? null;
+    }
+
+    /**
+     * @return list<Event>
+     */
+    public function events(): array
+    {
+        return $this->eventList;
     }
 
     public function has(string $name): bool

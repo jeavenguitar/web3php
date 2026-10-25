@@ -204,6 +204,47 @@ $results = $web3->rpc()->batch([
 // 结果与入参同序；单条失败不拖垮整批，对应项是 RpcException 实例
 ```
 
+### 解析交易 input data / 事件日志
+
+**有 ABI（精确解码）**——拿到交易哈希后，`input` 按 4 字节选择子反查 ABI 方法，日志按 topic0 反查事件：
+
+```php
+$tx = $web3->eth()->getTransactionByHash($hash);
+
+// input data 解析
+$parsed = $token->decodeInput($tx->input);
+// ['method' => 'transfer', 'signature' => 'transfer(address,uint256)',
+//  'selector' => '0xa9059cbb', 'args' => ['to' => '0x…', 'amount' => '1000000']]
+// 普通主币转账（input = 0x）时 method 为 null，不报错
+
+// 事件日志解析（回执或 getLogs 的结果都能喂）
+$receipt = $web3->eth()->getTransactionReceipt($hash);
+foreach ($token->decodeLogs($receipt->logs) as $log) {
+    $log['event'];   // "Transfer"；不在 ABI 中时为 null（原始日志在 $log['log']）
+    $log['args'];    // ['from' => …, 'to' => …, 'value' => '1000000']
+}
+```
+
+indexed 参数从 topics 解出；动态类型（string / bytes / 数组）做 indexed 时链上只存 keccak 哈希，解出的就是哈希原文。
+
+**无 ABI（尽力识别）**——内置 ERC20 / ERC721 / WETH / Uniswap V2 等常见签名，命中即解码，未命中退化为原始 32 字节字列表：
+
+```php
+use Web3php\Abi\RawDecoder;
+
+$parsed = RawDecoder::parseTransaction($tx);
+// ['from' => …, 'to' => …, 'value' => '1000000000000000',
+//  'selector' => '0xa9059cbb', 'method' => 'transfer',
+//  'signature' => 'transfer(address,uint256)', 'args' => [0 => '0x…', 1 => '1000000'], 'words' => []]
+// 不认识的方法：method = null，words 是 32 字节原始字列表（selector 仍会给出）
+
+$log = RawDecoder::parseLog($receipt->logs[0]);
+// ['address' => 合约地址, 'topic0' => …, 'event' => 'Transfer', 'args' => […],
+//  'topics' => […], 'dataWords' => […]]；不认识的事件 event = null
+```
+
+常量表之外的长尾签名（代理合约、冷门协议）需要外部签名库（4byte.directory、openchain）或拿到 ABI 后走上面的精确路径。
+
 ## 错误语义
 
 - 传输层问题（连接失败 / 超时 / HTTP 非 200 / 非 JSON / 空响应）**不直接抛**：先在当前节点退避重试，耗尽后切换下一个节点，全部失败才抛 `RpcException`（message 汇总每个节点的失败原因）。
@@ -214,7 +255,7 @@ $results = $web3->rpc()->batch([
 
 ## 测试与验证
 
-- PHPUnit 全离线：EIP-155 官方 worked example 逐字节复现、EIP-55 官方向量、RLP 官方向量、ERC20 选择子、ABI 全类型编解码往返、struct 数组长度语义、截断检测、EIP-1559 签名恢复闭环。
+- PHPUnit 全离线：EIP-155 官方 worked example 逐字节复现、EIP-55 官方向量、RLP 官方向量、ERC20 选择子、ABI 全类型编解码往返、struct 数组长度语义、截断检测、EIP-1559 签名恢复闭环、交易 input data 与事件日志解码（含 ERC20 Transfer topic0 世界锚点）。
 - 已对 BSC 主网实测：多节点故障转移、USDT 合约查询解码、批量查询、legacy 与 EIP-1559 交易签名（节点验签通过）。
 
 ```bash
@@ -231,7 +272,7 @@ src/
 ├── Wallet.php              私钥 → EIP-55 地址、签名
 ├── Contract/Contract.php   合约调用（call/encode/decode/estimateGas/send）
 ├── Rpc/RpcClient.php       稳健 JSON-RPC（重试/故障转移/keep-alive/批处理）
-├── Abi/                    ABI 解析与编解码（ParamType/Abi/Encoder/Decoder）
+├── Abi/                    ABI 解析与编解码（ParamType/Abi/Method/Event/Encoder/Decoder/RawDecoder）
 ├── Tx/                     RLP / 签名器（EIP-155、EIP-1559）/ 交易构建
 ├── Utils/                  Hex / Address(EIP-55) / Crypto(Keccak)
 └── Exception/              异常体系
@@ -240,7 +281,7 @@ src/
 ## 已知边界
 
 - `fixed` / `ufixed` 类型未实现（极少有合约使用，遇到会抛出明确异常）。
-- 事件 ABI（topic 解码）尚未内置，`getLogs` 返回原始日志对象，可配合 `Abi` 手工解码。
+- 无 ABI 的尽力解析只覆盖内置常见签名（选择子 / topic0 常量表），长尾方法或事件需要外部签名库（4byte.directory、openchain）或合约 ABI。
 - 只支持 HTTP(S) RPC 端点（WebSocket 不支持）。
 
 ## License
