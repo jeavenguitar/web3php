@@ -131,7 +131,6 @@ $result = $web3->sendTransaction($wallet, [
 if (!$result['ok']) {
     exit('发送失败：' . $result['error'] . "\n");  // 如 "RPC 错误 [-32000] nonce too low"
 }
-$hash = $result['hash'];
 
 // 合约方法调用：nonce / gas / gasPrice / chainId 全自动
 $result = $token->send('transfer', [$to, '1000000'], $wallet);
@@ -142,6 +141,8 @@ $result = $token->send('transfer', [$to, '1000000'], $wallet, [
     'maxFeePerGas'     => '30000000000',          // 给了它就是 type-2 交易
     'maxPriorityFeePerGas' => '1000000000',
 ]);
+
+$hash = $result['hash'];                          // 发送成功后，交易哈希在结果里
 
 $receipt = $web3->eth()->waitForReceipt($hash);
 ```
