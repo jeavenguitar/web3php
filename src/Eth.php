@@ -170,11 +170,25 @@ final class Eth
     }
 
     /**
-     * 广播已签名交易，返回交易哈希。
+     * 广播已签名交易。链上拒绝（nonce too low、insufficient funds、already known、
+     * 执行 revert 等）不抛异常，返回 ['ok' => false, 'error' => 报错文本]
+     * （revert 原因自动解码）；只有节点完全不可达才抛 RpcException。
+     *
+     * @return array{ok:bool, hash:?string, error:?string}
      */
-    public function sendRawTransaction(string $signedTransaction): string
+    public function sendRawTransaction(string $signedTransaction): array
     {
-        return (string) $this->rpc->request('eth_sendRawTransaction', [Hex::ensurePrefix($signedTransaction)]);
+        try {
+            $hash = (string) $this->rpc->request('eth_sendRawTransaction', [Hex::ensurePrefix($signedTransaction)]);
+        } catch (RpcException $e) {
+            if ($e->rpcCode === 0) {
+                throw $e;
+            }
+
+            return ['ok' => false, 'hash' => null, 'error' => Decoder::decodeKnownError($e->rpcData) ?? $e->getMessage()];
+        }
+
+        return ['ok' => true, 'hash' => $hash, 'error' => null];
     }
 
     /**

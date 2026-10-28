@@ -5,72 +5,21 @@ declare(strict_types=1);
 namespace Web3php\Tests;
 
 use PHPUnit\Framework\TestCase;
-use Web3php\Abi\Encoder;
-use Web3php\Abi\ParamType;
 use Web3php\Eth;
 use Web3php\Exception\RpcException;
-use Web3php\Exception\TxException;
-use Web3php\Rpc\RpcClient;
-use Web3php\Web3;
 use Web3php\Wallet;
 
 /**
  * estimateGas 的错误语义：
  *   - 链上 revert（RPC 业务错误）不抛异常 → 返回人类可读报错文本；
  *   - 节点不可达（传输层失败，rpcCode=0）仍抛 RpcException；
- *   - sendTransaction 拿到报错文本时抛 TxException（不能拿报错当 gas 用）。
+ *   - sendTransaction 拿到报错文本时返回 ['ok' => false, …]（不能拿报错当 gas 用）。
  */
 final class EstimateGasTest extends TestCase
 {
+    use RpcMockTrait;
+
     private const TO = '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf';
-
-    /** Error(string) 的 revert 数据：选择子 + ABI 编码的字符串（用自家编码器造，不手搓 hex） */
-    private static function revertData(string $message): string
-    {
-        return '0x08c379a0' . Encoder::encode([ParamType::parse('string')], [$message]);
-    }
-
-    /** 按 method 分发的假 RpcClient（不发任何网络请求）；值为 RpcException 时抛出 */
-    private static function rpc(array $handlers): RpcClient
-    {
-        return new class ($handlers) extends RpcClient {
-            /** @param array<string,mixed> $handlers */
-            public function __construct(private readonly array $handlers)
-            {
-                parent::__construct('http://127.0.0.1:8545');
-            }
-
-            public function request(string $method, array $params = []): mixed
-            {
-                $result = $this->handlers[$method]
-                    ?? throw new RpcException('测试未预期的请求：' . $method);
-
-                if ($result instanceof RpcException) {
-                    throw $result;
-                }
-
-                return $result;
-            }
-        };
-    }
-
-    /** eth() 走假 RpcClient 的 Web3（sendTransaction 全流程也在假节点上跑） */
-    private static function web3(array $handlers): Web3
-    {
-        $rpc = self::rpc($handlers);
-
-        return new class ($rpc) extends Web3 {
-            public function __construct(private readonly RpcClient $injected)
-            {
-                parent::__construct('http://127.0.0.1:8545');
-            }
-
-            public function eth(): Eth
-            {
-                return new Eth($this->injected);
-            }
-        };
-    }
 
     private static function eth(array $handlers): Eth
     {
@@ -143,7 +92,7 @@ final class EstimateGasTest extends TestCase
         );
     }
 
-    public function testSendTransactionSurfacesEstimateReason(): void
+    public function testSendTransactionEstimateRevertReturnsError(): void
     {
         $web3 = self::web3([
             'eth_getTransactionCount' => '0x5',
@@ -153,12 +102,11 @@ final class EstimateGasTest extends TestCase
         ]);
         $wallet = new Wallet('0x0000000000000000000000000000000000000000000000000000000000000001');
 
-        try {
-            $web3->sendTransaction($wallet, ['to' => self::TO, 'value' => '1']);
-            $this->fail('应当抛 TxException');
-        } catch (TxException $e) {
-            $this->assertStringContainsString('Error(string): insufficient allowance', $e->getMessage());
-        }
+        $result = $web3->sendTransaction($wallet, ['to' => self::TO, 'value' => '1']);
+
+        $this->assertFalse($result['ok']);
+        $this->assertNull($result['hash']);
+        $this->assertStringContainsString('Error(string): insufficient allowance', $result['error']);
     }
 
     public function testSendTransactionStillWorksWithNormalEstimate(): void
@@ -174,7 +122,7 @@ final class EstimateGasTest extends TestCase
         $wallet = new Wallet('0x0000000000000000000000000000000000000000000000000000000000000001');
 
         $this->assertSame(
-            '0x1111111111111111111111111111111111111111111111111111111111111111',
+            ['ok' => true, 'hash' => '0x1111111111111111111111111111111111111111111111111111111111111111', 'error' => null],
             $web3->sendTransaction($wallet, ['to' => self::TO, 'value' => '1000000000000000000']),
         );
     }

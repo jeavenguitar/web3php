@@ -198,11 +198,15 @@ final class Contract
     }
 
     /**
-     * 发送交易（本地签名 + 广播），返回交易哈希。
+     * 发送交易（本地签名 + 广播），返回 ['ok'/'hash'/'error']：
+     * 链上拒绝（nonce too low、余额不足、revert 等）不抛异常，报错在 error 键
+     * （revert 原因自动解码）；只有节点不可达才抛 RpcException。
      * $options 可覆盖：nonce、gas、gasPrice（或 maxFeePerGas+maxPriorityFeePerGas）、
      * value（payable 金额）、chainId。
+     *
+     * @return array{ok:bool, hash:?string, error:?string}
      */
-    public function send(string $method, array $args, Wallet|string $wallet, array $options = []): string
+    public function send(string $method, array $args, Wallet|string $wallet, array $options = []): array
     {
         $wallet = is_string($wallet) ? new Wallet($wallet) : $wallet;
 

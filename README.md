@@ -12,7 +12,9 @@ $usdt = $web3->contract($abiJson)->at('0x55d398326f99059fF775485246999027B319795
 $usdt->call('name');                        // "Tether USD"（ABI 解码，直接拿到标量）
 $usdt->call('balanceOf', $userAddress);     // "1234500000000000000"（uint256 → 十进制字符串，不丢精度）
 
-$txHash = $usdt->send('transfer', [$to, '1000000'], $wallet);  // 本地签名 + 自动补费 + 广播
+$txResult = $usdt->send('transfer', [$to, '1000000'], $wallet); // 本地签名 + 自动补费 + 广播
+$txResult['ok'];     // true：['hash' => '0x…', 'error' => null]
+$txResult['error'];  // false 时给链上报错文本（不抛异常）
 ```
 
 ## 为什么再造一个轮子
@@ -114,22 +116,28 @@ $calldata = $token->encode('transfer', [$to, '1000000']);
 $values   = $token->decode('getReserves', $hexFromRpc);
 ```
 
-### 发送交易（本地签名 + 自动补费）
+### 发送交易（本地签名 + 自动补费，失败不抛异常）
+
+`sendTransaction` / 合约 `send()` 统一返回 `['ok' / 'hash' / 'error']`：
 
 ```php
 $wallet = $web3->wallet($privateKey);             // 或 Web3php\Wallet::create() 新建
 
 // 裸转账
-$hash = $web3->sendTransaction($wallet, [
+$result = $web3->sendTransaction($wallet, [
     'to'    => $payee,
     'value' => '1000000000000000000',             // 1 BNB（wei，字符串）
 ]);
+if (!$result['ok']) {
+    exit('发送失败：' . $result['error'] . "\n");  // 如 "RPC 错误 [-32000] nonce too low"
+}
+$hash = $result['hash'];
 
 // 合约方法调用：nonce / gas / gasPrice / chainId 全自动
-$hash = $token->send('transfer', [$to, '1000000'], $wallet);
+$result = $token->send('transfer', [$to, '1000000'], $wallet);
 
 // 手动覆盖费用 / 切 EIP-1559
-$hash = $token->send('transfer', [$to, '1000000'], $wallet, [
+$result = $token->send('transfer', [$to, '1000000'], $wallet, [
     'gas'              => '65000',
     'maxFeePerGas'     => '30000000000',          // 给了它就是 type-2 交易
     'maxPriorityFeePerGas' => '1000000000',
@@ -138,8 +146,11 @@ $hash = $token->send('transfer', [$to, '1000000'], $wallet, [
 $receipt = $web3->eth()->waitForReceipt($hash);
 ```
 
-`sendTransaction` 缺省行为：nonce 取 `pending`、gasPrice 取 `eth_gasPrice`、gas 走 `eth_estimateGas`；
-estimateGas 被 revert 时会抛出带人类可读原因的异常（`Error(string)` / `Panic(uint256)` 自动解码）。
+`sendTransaction` 缺省行为：nonce 取 `pending`、gasPrice 取 `eth_gasPrice`、gas 走 `eth_estimateGas`。
+链上拒绝（`nonce too low`、余额不足、预估 revert、广播被拒等）**不抛异常**，统一返回
+`['ok' => false, 'hash' => null, 'error' => 报错文本]`（`Error(string)` / `Panic(uint256)` revert
+原因自动解码）；只有节点完全不可达才抛 `RpcException`，本地参数校验失败抛 `TxException`
+（那是调用代码的 bug，不是链上报错）。
 
 ### 预估手续费（eth_estimateGas）
 
@@ -249,7 +260,7 @@ $log = RawDecoder::parseLog($receipt->logs[0]);
 
 - 传输层问题（连接失败 / 超时 / HTTP 非 200 / 非 JSON / 空响应）**不直接抛**：先在当前节点退避重试，耗尽后切换下一个节点，全部失败才抛 `RpcException`（message 汇总每个节点的失败原因）。
 - RPC 业务错误（`execution reverted`、参数错误等）**不盲目重试**（重试也必然失败），立即抛 `RpcException`，带 `rpcCode` / `rpcData`。
-- `estimateGas` 是特例：模拟执行被 revert 属于「业务答案」而非故障——不抛异常，直接返回已解码的链上报错文本（`ctype_digit()` 区分估值与报错），只有节点不可达才抛 `RpcException`。
+- `estimateGas` 与交易发送（`sendTransaction` / 合约 `send` / `sendRawTransaction`）是特例：链上业务报错属于「业务答案」而非故障，不抛异常——estimateGas 直接返回报错文本（`ctype_digit()` 区分估值与报错），交易发送返回 `['ok' => false, 'hash' => null, 'error' => …]`（错误状态 + 提示语）；只有节点不可达才抛 `RpcException`。
 - `eth_getTransactionReceipt` 未上链返回 `null` —— pending 不是错误。
 - `failover_error_codes`：个别公共节点对特定查询返回错误而别的节点查得到（例如部分节点查久远回执返回 `-32602`），把这类错误码配进来会自动换节点再查。
 

@@ -29,7 +29,14 @@ printf("发送方：%s\n", $wallet->address());
 // 广播后统一等回执（BSC 出块约 3 秒；超时返回 null 不代表失败）
 $waitForReceipt = fn (string $hash) => $web3->eth()->waitForReceipt($hash, 60.0, 3000);
 
-$report = function (string $title, string $hash) use ($waitForReceipt): void {
+// 发送结果统一是 ['ok'/'hash'/'error']：失败不抛异常，报错直接展示
+$report = function (string $title, array $result) use ($waitForReceipt): void {
+    if (!$result['ok']) {
+        printf("%s 发送失败：%s\n", $title, $result['error']);
+
+        return;
+    }
+    $hash = $result['hash'];
     printf("%s 已广播：%s\n浏览器：https://bscscan.com/tx/%s\n", $title, $hash, $hash);
     $receipt = $waitForReceipt($hash);
     if ($receipt === null) {
@@ -58,7 +65,7 @@ printf("\n[主币转账] 当前余额 %s wei，本笔约需 %s wei（含 gas）%
     $balance, $need, bccomp($balance, $need) >= 0 ? '→ 够' : '→ 不够，别发！');
 
 // 最简形态：只给 to + value；nonce / gas / gasPrice / chainId 全部自动补齐
-$txHash = $web3->sendTransaction($wallet, [
+$report('[主币转账]', $web3->sendTransaction($wallet, [
     'to' => $payee,
     'value' => $amount,
     // 可选手动覆盖：
@@ -66,9 +73,7 @@ $txHash = $web3->sendTransaction($wallet, [
     // 'gasPrice' => '1000000000',
     // 'maxFeePerGas' => '…', 'maxPriorityFeePerGas' => '…',  // 给了 maxFeePerGas 即 EIP-1559
     // 'nonce' => 123,
-]);
-
-$report('[主币转账]', $txHash);
+]));
 
 // ════════════════════════════════════════════════════════════
 // 2. ERC20 转账（合约调用）
@@ -85,11 +90,9 @@ $to = '0x接收地址';
 $tokenAmount = '1000000000000000000'; // 1 USDT（18 位精度）
 
 // send() 自动补 nonce / gas / gasPrice / chainId，本地签名后广播；
-// 余额不足或合约 revert 时抛异常（revert 原因会自动解出）
-$txHash = $token->send('transfer', [$to, $tokenAmount], $wallet, [
+// 失败不抛异常：余额不足、nonce 太低、合约 revert 等报错都在 error 键（revert 原因自动解出）
+$report('[ERC20]', $token->send('transfer', [$to, $tokenAmount], $wallet, [
     // 'gas' => '65000',
     // 'gasPrice' => '5000000000',
     // 'maxFeePerGas' => '…',  // EIP-1559
-]);
-
-$report('[ERC20]', $txHash);
+]));

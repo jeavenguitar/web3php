@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace Web3php;
 
 use Web3php\Abi\Abi;
-use Web3php\Abi\Decoder;
 use Web3php\Contract\Contract;
 use Web3php\Exception\RpcException;
-use Web3php\Exception\TxException;
 use Web3php\Rpc\RpcClient;
 use Web3php\Tx\Transaction;
 use Web3php\Utils\Hex;
@@ -78,16 +76,24 @@ class Web3
     }
 
     /**
-     * 发送交易（自动补 nonce / gas / 费用 / chainId，本地签名后广播），返回交易哈希。
+     * 发送交易（自动补 nonce / gas / 费用 / chainId，本地签名后广播）。
+     *
+     * 链上拒绝（nonce too low、余额不足、预估 revert、广播被拒等）不抛异常，
+     * 统一返回错误状态与提示语：
+     *   ['ok' => true,  'hash' => '0x…', 'error' => null]
+     *   ['ok' => false, 'hash' => null,  'error' => '报错文本（revert 原因自动解码）']
+     * 只有节点不可达才抛 RpcException；本地参数校验失败抛 TxException（调用代码的 bug）。
      *
      * $tx 最少只需要 to + value（转账）或 to + data（合约调用）：
      *   - nonce    缺省自动取 from 的 pending nonce
      *   - chainId  缺省自动取当前节点
      *   - gasPrice 缺省自动取 eth_gasPrice（Legacy 模式）
-     *   - gas      缺省自动 estimateGas（revert 时抛 TxException 并尽量解出原因）
+     *   - gas      缺省自动 estimateGas
      * EIP-1559：显式给 maxFeePerGas（可再给 maxPriorityFeePerGas）即切换 type 2。
+     *
+     * @return array{ok:bool, hash:?string, error:?string}
      */
-    public function sendTransaction(Wallet $wallet, array $tx): string
+    public function sendTransaction(Wallet $wallet, array $tx): array
     {
         $tx['from'] = $wallet->address();
 
@@ -125,22 +131,11 @@ class Web3
             $estimated = $this->eth()->estimateGas($estimate);
             if (!ctype_digit($estimated)) {
                 // estimateGas 被 revert 时返回的是人类可读报错文本，不是数字
-                throw new TxException('estimateGas 失败，交易大概率会 revert：' . $estimated);
+                return ['ok' => false, 'hash' => null, 'error' => 'estimateGas 失败，交易大概率会 revert：' . $estimated];
             }
             $tx['gas'] = $estimated;
         }
 
-        $raw = Transaction::sign($wallet, $tx);
-
-        try {
-            return $this->eth()->sendRawTransaction($raw);
-        } catch (RpcException $e) {
-            $reason = Decoder::decodeKnownError($e->rpcData);
-            if ($reason !== null) {
-                throw new TxException('广播被拒：' . $e->getMessage() . '（原因：' . $reason . '）', 0, $e);
-            }
-
-            throw $e;
-        }
+        return $this->eth()->sendRawTransaction(Transaction::sign($wallet, $tx));
     }
 }
