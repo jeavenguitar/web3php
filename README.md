@@ -257,6 +257,89 @@ $log = RawDecoder::parseLog($receipt->logs[0]);
 
 常量表之外的长尾签名（代理合约、冷门协议）需要外部签名库（4byte.directory、openchain）或拿到 ABI 后走上面的精确路径。
 
+## 单位与精度转换（Units）
+
+`Web3\Utils\Units` 是 web3.js `web3.utils.fromWei` / `toWei` 的 PHP 实现，全部基于 GMP 大整数运算，**uint256 全程无精度丢失**。链上查询返回的 wei（或任意 ERC-20 最小单位）都能转换成任意精度的十进制，反之亦然。
+
+### wei → 十进制（fromWei）
+
+```php
+use Web3php\Utils\Units;
+
+Units::fromWei('1000000000000000000', 'ether');   // '1'
+Units::fromWei('1234567890123456789', 'ether');   // '1.234567890123456789'
+Units::fromWei('1500000000000000000', 'ether');   // '1.5'（尾部 0 自动去除）
+Units::fromWei('20500000000', 'gwei');            // '20.5'
+Units::fromWei('0xde0b6b3a7640000', 'ether');     // '1'（RPC 返回的 hex quantity 直接可用）
+Units::fromWei('115792089237316195423570985008687907853269984665640564039457584007913129639935', 'ether');
+// '115792089237316195423570985008687907853269984665640564039457.584007913129639935'（uint256 最大值，不丢位）
+```
+
+### 十进制 → wei（toWei）
+
+```php
+Units::toWei('1.5', 'ether');          // '1500000000000000000'
+Units::toWei('1', 'gwei');             // '1000000000'
+Units::toWei('0.000000001', 'ether');  // '1000000000'（恰好 1 gwei）
+```
+
+**超出目标精度时的行为**（安全设计，防静默丢钱）：
+
+```php
+Units::toWei('1.234', 2);                              // 抛 UnitsException（默认 ROUND_REJECT）
+Units::toWei('1.234', 2, Units::ROUND_DOWN);           // '123'（向下截断）
+Units::toWei('1.231', 2, Units::ROUND_UP);             // '124'（向上进位）
+Units::toWei('1.9999999999', 'gwei', Units::ROUND_UP); // '2000000000'（进位冲到整数部分）
+```
+
+### 通用双向转换（convert）
+
+```php
+Units::convert('1.5', 'ether', 'gwei');       // '1500000000'
+Units::convert('1000000000', 'wei', 'ether'); // '0.000000001'
+```
+
+### 支持的单位
+
+| 单位 | 小数位 | 单位 | 小数位 |
+|---|---|---|---|
+| wei | 0 | szabo | 12 |
+| kwei（babbage） | 3 | finney | 15 |
+| mwei（lovelace） | 6 | ether | 18 |
+| gwei（shannon） | 9 | kether（grand） | 21 |
+| | | mether / gether / tether | 24 / 27 / 30 |
+
+单位名不区分大小写，支持括号里的历史别名；也可以直接传 int 表示自定义小数位（如 ERC-20 的 `6` / `8`）。
+
+### ERC-20 代币快捷转换
+
+ERC-20 合约返回的 `balanceOf` / `decimals` 场景（USDT 是 6 位、WBTC 是 8 位，不要写死 18）：
+
+```php
+$decimals = 6; // 来自 token.decimals()
+Units::tokenFromBase('123456', $decimals); // '0.123456'（最小单位 → 可读数量）
+Units::tokenToBase('0.123456', $decimals); // '123456'（可读数量 → 最小单位，用于构造 calldata）
+```
+
+### 典型链上查询组合
+
+```php
+$balanceHex = $web3->eth->getBalance($address);       // '0x...' quantity
+echo Units::fromWei($balanceHex, 'ether'), PHP_EOL;   // 直接得到 ETH 数量
+
+$raw = $token->call('balanceOf', $address)[0];        // ERC-20 最小单位
+echo Units::tokenFromBase($raw, $tokenDecimals), PHP_EOL;
+```
+
+完整可运行示例见 [`examples/units.php`](examples/units.php)：第 1–4 节离线可跑（单位换算、精度模式、ERC-20 往返），第 5 节真实连 BSC 主网把 `getBalance` / `gasPrice` / USDT `balanceOf` 结果换算成可读数量。
+
+### 设计约束
+
+- **拒绝浮点数**：传 `float` 直接抛异常（`0.1` 在二进制浮点里不精确，在 wei 量级下误差足以算错资产），请传字符串 `'1.5'`。
+- **拒绝科学计数法**：`'1e18'` 无法无歧义地映射到精确整数，直接抛 `UnitsException`。
+- 所有方法返回**字符串**（不是 int / float），拿到的就是能直接放进 calldata 或数据库的精确值。
+- 异常类型：`Web3php\Exception\UnitsException`（继承自 `Web3Exception`）。
+
 ## 错误语义
 
 - 传输层问题（连接失败 / 超时 / HTTP 非 200 / 非 JSON / 空响应）**不直接抛**：先在当前节点退避重试，耗尽后切换下一个节点，全部失败才抛 `RpcException`（message 汇总每个节点的失败原因）。
@@ -267,7 +350,7 @@ $log = RawDecoder::parseLog($receipt->logs[0]);
 
 ## 测试与验证
 
-- PHPUnit 全离线：EIP-155 官方 worked example 逐字节复现、EIP-55 官方向量、RLP 官方向量、ERC20 选择子、ABI 全类型编解码往返、struct 数组长度语义、截断检测、EIP-1559 签名恢复闭环、交易 input data 与事件日志解码（含 ERC20 Transfer topic0 世界锚点）。
+- PHPUnit 全离线：EIP-155 官方 worked example 逐字节复现、EIP-55 官方向量、RLP 官方向量、ERC20 选择子、ABI 全类型编解码往返、struct 数组长度语义、截断检测、EIP-1559 签名恢复闭环、交易 input data 与事件日志解码（含 ERC20 Transfer topic0 世界锚点）、单位精度转换（wei/ether/gwei 往返、uint256 最大值、ROUND_DOWN/ROUND_UP、别名与非法输入）。
 - 已对 BSC 主网实测：多节点故障转移、USDT 合约查询解码、批量查询、legacy 与 EIP-1559 交易签名（节点验签通过）。
 
 ```bash
@@ -286,7 +369,7 @@ src/
 ├── Rpc/RpcClient.php       稳健 JSON-RPC（重试/故障转移/keep-alive/批处理）
 ├── Abi/                    ABI 解析与编解码（ParamType/Abi/Method/Event/Encoder/Decoder/RawDecoder）
 ├── Tx/                     RLP / 签名器（EIP-155、EIP-1559）/ 交易构建
-├── Utils/                  Hex / Address(EIP-55) / Crypto(Keccak)
+├── Utils/                  Hex / Address(EIP-55) / Crypto(Keccak) / Units(单位精度转换)
 └── Exception/              异常体系
 ```
 

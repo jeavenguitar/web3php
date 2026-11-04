@@ -13,7 +13,11 @@
         "rpc",
         "abi",
         "smart-contract",
-        "solidity"
+        "solidity",
+        "units",
+        "wei",
+        "gwei",
+        "precision"
     ],
     "authors": [
         {
