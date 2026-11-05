@@ -13,7 +13,8 @@ use Web3php\Wallet;
  *   - Legacy + EIP-155（chainId 防重放）
  *   - EIP-1559（type 2，动态费用）
  *
- * 签名后 r/s 左补齐到 32 字节；canonical 模式保证 low-s（EIP-2 共识要求）。
+ * 签名后 r/s 按 RLP 整数规范做最小编码（去掉前导 0x00 字节，geth 拒绝非规范整数）；
+ * canonical 模式保证 low-s（EIP-2 共识要求）。
  */
 final class Signer
 {
@@ -33,7 +34,7 @@ final class Signer
 
         $v = $chainId > 0 ? 35 + $recovery + 2 * $chainId : 27 + $recovery;
 
-        $signed = [...$base, $v, self::pad32($r), self::pad32($s)];
+        $signed = [...$base, $v, $r, $s];
 
         return '0x' . bin2hex(Rlp::encode($signed));
     }
@@ -60,7 +61,7 @@ final class Signer
 
         [$r, $s, $recovery] = self::ecSign($wallet, $hash);
 
-        $signed = [...$base, $recovery, self::pad32($r), self::pad32($s)];
+        $signed = [...$base, $recovery, $r, $s];
 
         return '0x02' . bin2hex(Rlp::encode($signed));
     }
@@ -68,7 +69,7 @@ final class Signer
     /**
      * secp256k1 签名 32 字节哈希。
      *
-     * @return array{0:string,1:string,2:int} [r(二进制), s(二进制), recoveryParam]
+     * @return array{0:string,1:string,2:int} [r(二进制,最小编码), s(二进制,最小编码), recoveryParam]
      */
     private static function ecSign(Wallet $wallet, string $hashHex): array
     {
@@ -83,11 +84,8 @@ final class Signer
             $s = '0' . $s;
         }
 
-        return [hex2bin($r), hex2bin($s), (int) $signature->recoveryParam];
-    }
-
-    private static function pad32(string $binary): string
-    {
-        return str_pad($binary, 32, "\x00", STR_PAD_LEFT);
+        // RLP 整数必须最小编码：去掉前导 0x00 字节，否则 geth 报
+        // "rlp: non-canonical integer (leading zero bytes) for *big.Int"（公网节点常表现为 unmarshal transaction failed）
+        return [ltrim(hex2bin($r), "\x00"), ltrim(hex2bin($s), "\x00"), (int) $signature->recoveryParam];
     }
 }
