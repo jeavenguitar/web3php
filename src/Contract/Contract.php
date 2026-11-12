@@ -95,12 +95,22 @@ final class Contract
 
         $decoded = Decoder::decode($definition->outputs, $raw);
 
-        // 单输出直接给标量；多输出保持数组（已含命名键）
+        // 单输出直接给标量；多输出保持数组（已含命名键）。
+        // 全命名输出（如命名 struct）经 Decoder::preferNamedKeys 会剥掉数字键，
+        // 不能硬取 $decoded[0]，按解码顺序取首个值兜底。
         if ($definition->outputs === []) {
             return null;
         }
 
-        return count($definition->outputs) === 1 ? $decoded[0] : $decoded;
+        if (count($definition->outputs) !== 1) {
+            return $decoded;
+        }
+
+        foreach ($decoded as $value) {
+            return $value;
+        }
+
+        return null;
     }
 
     /**
